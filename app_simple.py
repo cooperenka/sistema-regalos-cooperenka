@@ -1,244 +1,344 @@
-from flask import Flask, render_template, request, jsonify, redirect, url_for
-from flask_sqlalchemy import SQLAlchemy
+import streamlit as st
+import pandas as pd
 from datetime import datetime
+import sqlite3
 import os
 
-app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///cooperenka_regalos.db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+# Configuración de la página
+st.set_page_config(
+    page_title="Sistema Cooperenka",
+    page_icon="🎁",
+    layout="wide"
+)
 
-db = SQLAlchemy(app)
-
-# Modelo de la base de datos
-class Asociado(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    cedula = db.Column(db.String(20), nullable=False, unique=True)
-    nombre1 = db.Column(db.String(50), nullable=False)
-    nombre2 = db.Column(db.String(50), default='')
-    apellido1 = db.Column(db.String(50), nullable=False)
-    apellido2 = db.Column(db.String(50), default='')
-    agencia = db.Column(db.String(100), nullable=False)
-    empresa = db.Column(db.String(100), nullable=False)
-    observaciones = db.Column(db.Text, default='')
-    estado = db.Column(db.String(20), default='PENDIENTE')
-    fecha_entrega = db.Column(db.DateTime, nullable=True)
-    usuario_entrega = db.Column(db.String(100), default='')
-
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'cedula': self.cedula,
-            'nombre_completo': f"{self.nombre1} {self.nombre2} {self.apellido1} {self.apellido2}".strip(),
-            'agencia': self.agencia,
-            'empresa': self.empresa,
-            'observaciones': self.observaciones or '',
-            'estado': self.estado,
-            'fecha_entrega': self.fecha_entrega.strftime('%Y-%m-%d %H:%M') if self.fecha_entrega else '',
-            'usuario_entrega': self.usuario_entrega or ''
-        }
-
-# Inicializar base de datos con datos de ejemplo
-def inicializar_db():
-    db.create_all()
-    if Asociado.query.count() == 0:
+# Crear/conectar base de datos
+def init_db():
+    conn = sqlite3.connect('cooperenka.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS asociados (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cedula TEXT UNIQUE NOT NULL,
+        nombre1 TEXT NOT NULL,
+        nombre2 TEXT,
+        apellido1 TEXT NOT NULL,
+        apellido2 TEXT,
+        agencia TEXT NOT NULL,
+        empresa TEXT NOT NULL,
+        observaciones TEXT,
+        estado TEXT DEFAULT 'PENDIENTE',
+        fecha_entrega TEXT,
+        usuario_entrega TEXT
+    )
+    ''')
+    
+    # Insertar datos de ejemplo si la tabla está vacía
+    cursor.execute('SELECT COUNT(*) FROM asociados')
+    if cursor.fetchone()[0] == 0:
         datos_ejemplo = [
-            Asociado(cedula='12345678', nombre1='JUAN', nombre2='CARLOS',
-                    apellido1='GARCIA', apellido2='PEREZ',
-                    agencia='PRINCIPAL', empresa='EMPRESA A'),
-            Asociado(cedula='87654321', nombre1='MARIA', nombre2='ELENA',
-                    apellido1='MARTINEZ', apellido2='GONZALEZ',
-                    agencia='ZONA NORTE', empresa='EMPRESA B',
-                    observaciones='Contactar antes de entregar'),
-            Asociado(cedula='11223344', nombre1='CARLOS', nombre2='ALBERTO',
-                    apellido1='RODRIGUEZ', apellido2='HERNANDEZ',
-                    agencia='CENTRO', empresa='EMPRESA C',
-                    estado='ENTREGADO', fecha_entrega=datetime.now(),
-                    usuario_entrega='Sistema'),
-            Asociado(cedula='99887766', nombre1='ANA', nombre2='SOFIA',
-                    apellido1='LOPEZ', apellido2='DIAZ',
-                    agencia='SUR', empresa='EMPRESA D',
-                    observaciones='Verificar identidad')
+            ('12345678', 'JUAN', 'CARLOS', 'GARCIA', 'PEREZ', 'PRINCIPAL', 'EMPRESA A', '', 'PENDIENTE', '', ''),
+            ('87654321', 'MARIA', 'ELENA', 'MARTINEZ', 'GONZALEZ', 'ZONA NORTE', 'EMPRESA B', 'Contactar antes de entregar', 'PENDIENTE', '', ''),
+            ('11223344', 'CARLOS', 'ALBERTO', 'RODRIGUEZ', 'HERNANDEZ', 'CENTRO', 'EMPRESA C', '', 'ENTREGADO', '2024-12-15 10:30', 'Sistema'),
+            ('99887766', 'ANA', 'SOFIA', 'LOPEZ', 'DIAZ', 'SUR', 'EMPRESA D', 'Verificar identidad', 'PENDIENTE', '', ''),
+            ('55443322', 'LUIS', 'MIGUEL', 'HERNANDEZ', 'JIMENEZ', 'ORIENTE', 'EMPRESA E', '', 'PENDIENTE', '', '')
         ]
         
-        for asociado in datos_ejemplo:
-            db.session.add(asociado)
-        db.session.commit()
+        cursor.executemany('''
+        INSERT INTO asociados (cedula, nombre1, nombre2, apellido1, apellido2, agencia, empresa, observaciones, estado, fecha_entrega, usuario_entrega)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', datos_ejemplo)
+    
+    conn.commit()
+    conn.close()
 
-@app.route('/')
-def index():
-    total = Asociado.query.count()
-    entregados = Asociado.query.filter_by(estado='ENTREGADO').count()
+# Funciones de base de datos
+def get_all_asociados():
+    conn = sqlite3.connect('cooperenka.db')
+    df = pd.read_sql_query('SELECT * FROM asociados ORDER BY apellido1, nombre1', conn)
+    conn.close()
+    return df
+
+def get_estadisticas():
+    conn = sqlite3.connect('cooperenka.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT COUNT(*) FROM asociados')
+    total = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) FROM asociados WHERE estado = 'ENTREGADO'")
+    entregados = cursor.fetchone()[0]
+    
     pendientes = total - entregados
     
-    return f'''
-    <!DOCTYPE html>
-    <html lang="es">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Sistema Cooperenka</title>
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-        <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-        <style>
-            .header-gradient {{
-                background: linear-gradient(135deg, #2E8B57 0%, #3CB371 100%);
-                color: white;
-                padding: 2rem 0;
-            }}
-            .stat-card {{
-                background: white;
-                border-radius: 15px;
-                padding: 1.5rem;
-                box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
-                margin-bottom: 1rem;
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="header-gradient">
-            <div class="container">
-                <h1 class="text-center"><i class="fas fa-gift"></i> Sistema de Entrega de Regalos</h1>
-                <h3 class="text-center">Cooperenka - Sistema Online</h3>
-            </div>
-        </div>
-        
-        <div class="container mt-4">
-            <div class="row">
-                <div class="col-md-4">
-                    <div class="stat-card text-center">
-                        <h2 class="text-primary">{total}</h2>
-                        <p class="mb-0">Total Asociados</p>
-                    </div>
-                </div>
-                <div class="col-md-4">
-                    <div class="stat-card text-center">
-                        <h2 class="text-success">{entregados}</h2>
-                        <p class="mb-0">Entregados</p>
-                    </div>
-                </div>
-                <div class="col-md-4">
-                    <div class="stat-card text-center">
-                        <h2 class="text-warning">{pendientes}</h2>
-                        <p class="mb-0">Pendientes</p>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="row mt-4">
-                <div class="col-md-6">
-                    <div class="card h-100">
-                        <div class="card-body text-center">
-                            <i class="fas fa-users fa-3x text-primary mb-3"></i>
-                            <h5 class="card-title">Ver Asociados</h5>
-                            <p class="card-text">Lista completa con opciones de entrega</p>
-                            <a href="/asociados" class="btn btn-primary">
-                                <i class="fas fa-list"></i> Ver Lista
-                            </a>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="col-md-6">
-                    <div class="card h-100">
-                        <div class="card-body text-center">
-                            <i class="fas fa-search fa-3x text-success mb-3"></i>
-                            <h5 class="card-title">Buscar Asociado</h5>
-                            <p class="card-text">Búsqueda rápida por cédula</p>
-                            <a href="/buscar" class="btn btn-success">
-                                <i class="fas fa-search"></i> Buscar
-                            </a>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="alert alert-success mt-4">
-                <h4><i class="fas fa-check-circle"></i> Sistema Funcionando Correctamente</h4>
-                <p class="mb-0">✅ Base de datos activa ✅ {total} asociados cargados ✅ API funcionando</p>
-            </div>
-        </div>
-    </body>
-    </html>
-    '''
-
-@app.route('/asociados')
-def lista_asociados():
-    asociados = Asociado.query.all()
+    cursor.execute("SELECT COUNT(*) FROM asociados WHERE observaciones != '' AND observaciones IS NOT NULL")
+    novedades = cursor.fetchone()[0]
     
-    asociados_html = ''
-    for asociado in asociados:
-        estado_color = 'success' if asociado.estado == 'ENTREGADO' else 'warning'
-        estado_icon = 'check-circle' if asociado.estado == 'ENTREGADO' else 'clock'
-        
-        btn_entregar = ''
-        if asociado.estado == 'PENDIENTE':
-            btn_entregar = f'<a href="/entregar/{asociado.id}" class="btn btn-success btn-sm"><i class="fas fa-check"></i> Entregar</a>'
-        
-        asociados_html += f'''
-        <tr>
-            <td><strong>{asociado.cedula}</strong></td>
-            <td>{asociado.nombre_completo}</td>
-            <td>{asociado.agencia}</td>
-            <td>{asociado.empresa}</td>
-            <td><span class="badge bg-{estado_color}"><i class="fas fa-{estado_icon}"></i> {asociado.estado}</span></td>
-            <td>{asociado.observaciones}</td>
-            <td>{btn_entregar}</td>
-        </tr>
-        '''
+    conn.close()
     
-    return f'''
-    <!DOCTYPE html>
-    <html lang="es">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Lista de Asociados - Cooperenka</title>
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-        <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    </head>
-    <body>
-        <div class="container mt-4">
-            <div class="d-flex justify-content-between align-items-center mb-4">
-                <h2><i class="fas fa-users"></i> Lista de Asociados</h2>
-                <a href="/" class="btn btn-secondary"><i class="fas fa-home"></i> Inicio</a>
-            </div>
-            
-            <div class="table-responsive">
-                <table class="table table-hover">
-                    <thead class="table-dark">
-                        <tr>
-                            <th>Cédula</th>
-                            <th>Nombre Completo</th>
-                            <th>Agencia</th>
-                            <th>Empresa</th>
-                            <th>Estado</th>
-                            <th>Observaciones</th>
-                            <th>Acciones</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {asociados_html}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </body>
-    </html>
-    '''
+    return total, entregados, pendientes, novedades
 
-@app.route('/buscar')
-def buscar_form():
-    return '''
-    <!DOCTYPE html>
-    <html lang="es">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Buscar Asociado - Cooperenka</title>
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-        <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    </head>
-    <body>
-        <div class="container mt-4">
-            <div class="row">
-                <div class="col-md
+def buscar_asociado(termino):
+    conn = sqlite3.connect('cooperenka.db')
+    query = '''
+    SELECT * FROM asociados 
+    WHERE cedula LIKE ? OR nombre1 LIKE ? OR apellido1 LIKE ?
+    OR (nombre1 || ' ' || nombre2 || ' ' || apellido1 || ' ' || apellido2) LIKE ?
+    ORDER BY apellido1, nombre1
+    '''
+    df = pd.read_sql_query(query, conn, params=[f'%{termino}%']*4)
+    conn.close()
+    return df
+
+def marcar_entregado(asociado_id, usuario):
+    conn = sqlite3.connect('cooperenka.db')
+    cursor = conn.cursor()
+    
+    fecha_actual = datetime.now().strftime('%Y-%m-%d %H:%M')
+    cursor.execute('''
+    UPDATE asociados 
+    SET estado = 'ENTREGADO', fecha_entrega = ?, usuario_entrega = ?
+    WHERE id = ?
+    ''', (fecha_actual, usuario, asociado_id))
+    
+    conn.commit()
+    conn.close()
+
+# Inicializar base de datos
+init_db()
+
+# CSS personalizado
+st.markdown("""
+<style>
+    .main-header {
+        background: linear-gradient(90deg, #2E8B57 0%, #3CB371 100%);
+        padding: 1rem;
+        border-radius: 10px;
+        margin-bottom: 2rem;
+        color: white;
+        text-align: center;
+    }
+    .stat-card {
+        background: white;
+        padding: 1rem;
+        border-radius: 8px;
+        border-left: 4px solid #2E8B57;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        margin-bottom: 1rem;
+    }
+    .result-card {
+        background: #f8f9fa;
+        padding: 1rem;
+        border-radius: 8px;
+        border: 1px solid #dee2e6;
+        margin: 0.5rem 0;
+    }
+    .observation-alert {
+        background: #fff3cd;
+        border: 1px solid #ffeaa7;
+        padding: 0.5rem;
+        border-radius: 5px;
+        margin: 0.5rem 0;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Header principal
+st.markdown("""
+<div class="main-header">
+    <h1>🎁 Sistema de Entrega de Regalos - Cooperenka</h1>
+    <p>Gestión completa de entregas en tiempo real</p>
+</div>
+""", unsafe_allow_html=True)
+
+# Obtener estadísticas
+total, entregados, pendientes, novedades = get_estadisticas()
+
+# Dashboard de estadísticas
+col1, col2, col3, col4 = st.columns(4)
+
+with col1:
+    st.metric("📊 Total Asociados", total)
+
+with col2:
+    st.metric("✅ Entregados", entregados, delta=f"{(entregados/total*100):.1f}%" if total > 0 else "0%")
+
+with col3:
+    st.metric("⏳ Pendientes", pendientes)
+
+with col4:
+    st.metric("⚠️ Con Novedades", novedades)
+
+# Sidebar para navegación
+st.sidebar.title("🧭 Navegación")
+page = st.sidebar.selectbox(
+    "Seleccionar página:",
+    ["🔍 Buscar Asociado", "📋 Lista Completa", "📊 Estadísticas", "📁 Cargar Datos"]
+)
+
+# Contenido principal según la página
+if page == "🔍 Buscar Asociado":
+    st.header("🔍 Buscar Asociado")
+    
+    # Campo de búsqueda
+    search_term = st.text_input(
+        "Buscar por cédula o nombre:",
+        placeholder="Ingresa cédula o nombre del asociado...",
+        help="Puedes buscar por número de cédula o por cualquier parte del nombre"
+    )
+    
+    if search_term:
+        resultados = buscar_asociado(search_term)
+        
+        if resultados.empty:
+            st.warning(f"❌ No se encontraron resultados para: '{search_term}'")
+        else:
+            st.success(f"✅ {len(resultados)} resultado(s) encontrado(s)")
+            
+            for index, row in resultados.iterrows():
+                with st.container():
+                    col1, col2, col3 = st.columns([3, 1, 1])
+                    
+                    with col1:
+                        nombre_completo = f"{row['nombre1']} {row['nombre2']} {row['apellido1']} {row['apellido2']}".strip()
+                        st.markdown(f"**👤 {nombre_completo}**")
+                        st.write(f"📊 Cédula: {row['cedula']} | 🏢 Agencia: {row['agencia']} | 🏭 Empresa: {row['empresa']}")
+                        
+                        if row['observaciones']:
+                            st.markdown(f"""
+                            <div class="observation-alert">
+                                <strong>⚠️ OBSERVACIONES:</strong> {row['observaciones']}
+                            </div>
+                            """, unsafe_allow_html=True)
+                    
+                    with col2:
+                        if row['estado'] == 'ENTREGADO':
+                            st.success("✅ ENTREGADO")
+                            if row['fecha_entrega']:
+                                st.caption(f"📅 {row['fecha_entrega']}")
+                        else:
+                            st.warning("⏳ PENDIENTE")
+                    
+                    with col3:
+                        if row['estado'] == 'PENDIENTE':
+                            if st.button(f"✅ Entregar", key=f"entregar_{row['id']}"):
+                                usuario = st.session_state.get('usuario_actual', 'Usuario Web')
+                                marcar_entregado(row['id'], usuario)
+                                st.success("✅ Regalo marcado como entregado!")
+                                st.experimental_rerun()
+                    
+                    st.markdown("---")
+
+elif page == "📋 Lista Completa":
+    st.header("📋 Lista Completa de Asociados")
+    
+    # Filtros
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        filtro_estado = st.selectbox("Filtrar por estado:", ["Todos", "PENDIENTE", "ENTREGADO"])
+    
+    with col2:
+        df_asociados = get_all_asociados()
+        agencias = ["Todas"] + sorted(df_asociados['agencia'].unique().tolist())
+        filtro_agencia = st.selectbox("Filtrar por agencia:", agencias)
+    
+    with col3:
+        filtro_novedades = st.selectbox("Filtrar:", ["Todos", "Con observaciones", "Sin observaciones"])
+    
+    # Aplicar filtros
+    df_filtrado = df_asociados.copy()
+    
+    if filtro_estado != "Todos":
+        df_filtrado = df_filtrado[df_filtrado['estado'] == filtro_estado]
+    
+    if filtro_agencia != "Todas":
+        df_filtrado = df_filtrado[df_filtrado['agencia'] == filtro_agencia]
+    
+    if filtro_novedades == "Con observaciones":
+        df_filtrado = df_filtrado[df_filtrado['observaciones'].notna() & (df_filtrado['observaciones'] != '')]
+    elif filtro_novedades == "Sin observaciones":
+        df_filtrado = df_filtrado[(df_filtrado['observaciones'].isna()) | (df_filtrado['observaciones'] == '')]
+    
+    st.subheader(f"📊 Registros ({len(df_filtrado)} de {len(df_asociados)})")
+    
+    if not df_filtrado.empty:
+        # Preparar datos para mostrar
+        df_display = df_filtrado.copy()
+        df_display['nombre_completo'] = df_display['nombre1'] + ' ' + df_display['nombre2'] + ' ' + df_display['apellido1'] + ' ' + df_display['apellido2']
+        
+        # Mostrar tabla
+        st.dataframe(
+            df_display[['cedula', 'nombre_completo', 'agencia', 'empresa', 'estado', 'observaciones', 'fecha_entrega']],
+            use_container_width=True,
+            hide_index=True
+        )
+    else:
+        st.info("📭 No hay registros que coincidan con los filtros seleccionados.")
+
+elif page == "📊 Estadísticas":
+    st.header("📊 Estadísticas Detalladas")
+    
+    df_asociados = get_all_asociados()
+    
+    if not df_asociados.empty:
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Gráfico de estado
+            estados = df_asociados['estado'].value_counts()
+            st.subheader("📈 Estado de Entregas")
+            st.bar_chart(estados)
+        
+        with col2:
+            # Gráfico por agencia
+            agencias = df_asociados['agencia'].value_counts()
+            st.subheader("🏢 Distribución por Agencia")
+            st.bar_chart(agencias)
+        
+        # Tabla resumen por agencia
+        st.subheader("📋 Resumen por Agencia")
+        resumen_agencias = df_asociados.groupby('agencia')['estado'].value_counts().unstack(fill_value=0)
+        if 'ENTREGADO' in resumen_agencias.columns and 'PENDIENTE' in resumen_agencias.columns:
+            resumen_agencias['Total'] = resumen_agencias.sum(axis=1)
+            resumen_agencias['% Entregados'] = (resumen_agencias['ENTREGADO'] / resumen_agencias['Total'] * 100).round(1)
+        
+        st.dataframe(resumen_agencias, use_container_width=True)
+
+elif page == "📁 Cargar Datos":
+    st.header("📁 Cargar Datos")
+    
+    st.info("🔄 Funcionalidad de carga disponible. Sistema funcionando con datos de ejemplo.")
+    
+    # Mostrar formato esperado
+    st.subheader("📋 Formato Esperado")
+    formato_ejemplo = pd.DataFrame({
+        'CEDULA': ['12345678', '87654321'],
+        'NOMBRE 1': ['JUAN', 'MARIA'],
+        'NOMBRE 2': ['CARLOS', 'ELENA'],
+        'APELLIDO 1': ['GARCIA', 'MARTINEZ'],
+        'APELLIDO 2': ['PEREZ', 'GONZALEZ'],
+        'AGENCIA': ['PRINCIPAL', 'ZONA NORTE'],
+        'EMPRESA': ['EMPRESA A', 'EMPRESA B'],
+        'OBSERVACIONES': ['', 'Contactar antes']
+    })
+    
+    st.dataframe(formato_ejemplo, use_container_width=True)
+
+# Configurar usuario en sidebar
+with st.sidebar:
+    st.markdown("---")
+    st.subheader("👤 Usuario")
+    usuario_actual = st.text_input("Tu nombre:", value=st.session_state.get('usuario_actual', ''))
+    if usuario_actual:
+        st.session_state['usuario_actual'] = usuario_actual
+        st.success(f"👋 Hola, {usuario_actual}")
+
+# Footer
+st.markdown("---")
+st.markdown("""
+<div style="text-align: center; color: #666; padding: 20px;">
+    <p><strong>Cooperenka</strong> - Sistema de Registro de Entregas</p>
+    <p>🔄 Sistema funcionando online | 🌐 Acceso multi-dispositivo</p>
+</div>
+""", unsafe_allow_html=True)
